@@ -1,32 +1,41 @@
 import sys
 import os
+import datetime
+import traceback
+import requests
+import base64
+import re
+import urllib.parse
+import json
 
-print("--- [DEBUG] 脚本进入初始化阶段 ---")
+# 定义双向 Logger
+class Logger(object):
+    def __init__(self, filename="report.txt"):
+        self.terminal = sys.stdout
+        self.log = open(filename, "w", encoding="utf-8")
 
-try:
-    import requests
-    import base64
-    import re
-    import urllib.parse
-    import json
-    import datetime
-    import traceback
-    print("--- [DEBUG] 所有核心依赖库加载成功 ---")
-except Exception as init_err:
-    print(f"❌ [CRITICAL] 依赖库导入失败: {init_err}")
-    sys.exit(1)
+    def write(self, message):
+        self.terminal.write(message)
+        self.log.write(message)
+
+    def flush(self):
+        self.terminal.flush()
+        self.log.flush()
+
+# 强制重定向，保证任何 print 都能被塞进 report.txt
+sys.stdout = Logger("report.txt")
+sys.stderr = sys.stdout
+
+print("==================================================")
+print(f"📋 运行报告生成时间: {(datetime.datetime.utcnow() + datetime.timedelta(hours=8)).strftime('%Y-%m-%d %H:%M:%S')} (北京时间)")
+print("==================================================")
 
 def get_date_strings(days_ago=0):
     bj_time = datetime.datetime.utcnow() + datetime.timedelta(hours=8) - datetime.timedelta(days=days_ago)
     return bj_time.strftime("%Y%m%d"), bj_time.strftime("%Y"), bj_time.strftime("%m")
 
-try:
-    d_today, y_today, m_today = get_date_strings(0)
-    d_yesterday, y_yesterday, m_yesterday = get_date_strings(1)
-    print(f"--- [DEBUG] 动态日期计算成功: 今天={d_today}, 昨天={d_yesterday} ---")
-except Exception as date_err:
-    print(f"❌ [CRITICAL] 日期计算失败: {date_err}")
-    sys.exit(1)
+d_today, y_today, m_today = get_date_strings(0)
+d_yesterday, y_yesterday, m_yesterday = get_date_strings(1)
 
 SOURCES = [
     "https://raw.githubusercontent.com/Pawdroid/Free-servers/main/sub",
@@ -74,16 +83,14 @@ def fetch_and_decode():
     raw_configs = []
     node_pattern = re.compile(r'^(vmess|vless|ss|trojan|hysteria2|hy2)://[^\s]+')
     
-    print(f"--- [DEBUG] 开始执行数据源抓取，共 {len(SOURCES)} 个源 ---")
-    for url in SOURCES:
+    print(f"[INFO] 开始请求全网共 {len(SOURCES)} 个节点数据源...")
+    for index, url in enumerate(SOURCES, 1):
         try:
-            print(f"👉 正在请求源: {url}")
             res = requests.get(url, timeout=10)
-            print(f"   [状态码: {res.status_code}]")
+            print(f" -> [{index:02d}] 探测源: {url} | 状态: {res.status_code}")
             if res.status_code == 200:
                 content = res.text.strip()
                 if "<html" in content.lower() or "<doctype" in content.lower():
-                    print("   [⚠️ 警告] 检测到 HTML 源码而非订阅，跳过")
                     continue
                     
                 if "://" not in content and len(content) > 20:
@@ -92,30 +99,28 @@ def fetch_and_decode():
                 else:
                     lines = content.splitlines()
                 
-                valid_count = 0
+                sub_counter = 0
                 for line in lines:
                     line_str = line.strip()
                     if node_pattern.match(line_str):
                         raw_configs.append(line_str)
-                        valid_count += 1
-                print(f"   [成功] 从该源提取到 {valid_count} 个标准节点行")
+                        sub_counter += 1
+                print(f"    └── 成功提取标准节点: {sub_counter} 条")
         except Exception as e:
-            print(f"   [失败] 访问该源发生异常: {e}")
+            print(f"    └── 请求异常，跳过: {e}")
             
     return list(set(raw_configs))
 
-def rename_nodes_all(nodes):
+def process_and_rename(nodes):
     final_nodes = []
     counter = 1
     
-    print(f"--- [DEBUG] 开始解析与重命名，原始合并总数: {len(nodes)} ---")
-    
-    # 强制注入首行提示死节点
+    print(f"[INFO] 正在注入首行公告并重新格式化 {len(nodes)} 个节点...")
     notice_name = "📢-来自公开的免费节点源 仅作为学习参考"
     notice_node = f"vless://unusable-uuid@127.0.0.1:8888?encryption=none&security=none#{urllib.parse.quote(notice_name)}"
     final_nodes.append(notice_node)
 
-    for idx, node in enumerate(nodes):
+    for node in nodes:
         try:
             if node.startswith("vmess://"):
                 b64_data = node.replace("vmess://", "")
@@ -141,34 +146,30 @@ def rename_nodes_all(nodes):
                 new_ps = f"{country}-Rowanss节点分享-{counter:03d}"
                 final_nodes.append(f"{base_url}#{urllib.parse.quote(new_ps)}")
                 counter += 1
-        except Exception as single_err:
-            print(f"❌ [行错误] 第 {idx} 个节点解析失败，跳过。原因: {single_err}")
+        except Exception:
             continue
             
     return final_nodes
 
 if __name__ == "__main__":
-    print("--- [DEBUG] 进入主程序入口 (__main__) ---")
     try:
-        raw_nodes = fetch_and_decode()
-        print(f"--- [DEBUG] 去重合并完成，共有 {len(raw_nodes)} 个节点准备进行格式化 ---")
+        raw_list = fetch_and_decode()
+        print(f"[INFO] 指纹去重完毕，留存基础节点: {len(raw_list)} 条。")
         
-        processed_nodes = rename_and_filter_nodes_all = rename_nodes_all(raw_nodes)
+        output_list = process_and_rename(raw_list)
         
-        print("--- [DEBUG] 正在尝试写入 nodes.txt ---")
-        joined_nodes = "\n".join(processed_nodes)
+        print("[INFO] 正在将最终数据写入硬盘...")
+        joined_data = "\n".join(output_list)
         with open("nodes.txt", "w", encoding="utf-8") as f:
-            f.write(joined_nodes)
+            f.write(joined_data)
             
-        print("--- [DEBUG] 正在尝试写入 sub.txt ---")
-        b64_encoded = base64.b64encode(joined_nodes.encode('utf-8')).decode('utf-8')
+        b64_data = base64.b64encode(joined_data.encode('utf-8')).decode('utf-8')
         with open("sub.txt", "w", encoding="utf-8") as f:
-            f.write(b64_encoded)
+            f.write(b64_data)
             
-        print(f"--- [🎉 成功] 全量处理完毕！最终生成了 {len(processed_nodes)} 个节点 ---")
+        print(f"[🎉 FINISHED] 自动化管道运行成功。共生成节点 {len(output_list)} 个。")
         
     except Exception as fatal_err:
-        print("\n💥💥💥 [FATAL CRASH] 主程序捕获到未处理的毁灭性崩溃 💥💥💥")
-        print("以下是具体的崩溃调用栈（请提供给 AI 分析）：")
+        print("\n💥💥💥 [FATAL ERROR] 遭遇毁灭性未捕捉异常 💥💥💥")
         traceback.print_exc()
         sys.exit(1)
