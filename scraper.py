@@ -3,22 +3,28 @@ import base64
 import re
 import urllib.parse
 import json
+import datetime
+import socket
 
-# 你提供的 10 个优质高频更新源
+# 动态生成日期
+bj_time = datetime.datetime.utcnow() + datetime.timedelta(hours=8)
+date_str = bj_time.strftime("%Y%m%d")      
+year_str = bj_time.strftime("%Y")          
+month_str = bj_time.strftime("%m")         
+
+# 优化源：如果动态源不存在，try 块会自动跳过，不影响整体运行
 SOURCES = [
     "https://raw.githubusercontent.com/Pawdroid/Free-servers/main/sub",
-    "https://wanzhuanmi.cczzuu.top/node/20260619.txt",
-    "https://oss.oneclash.cc/2026/06/20260619.txt",
+    f"https://wanzhuanmi.cczzuu.top/node/{date_str}.txt",
+    f"https://oss.oneclash.cc/{year_str}/{month_str}/{date_str}.txt",
     "https://raw.githubusercontent.com/shaoyouvip/free/refs/heads/main/base64.txt",
     "https://Nmnb6H.tosslk.xyz/54759c411d85fcfc170e8882ec60b863",
     "https://raw.githubusercontent.com/barry-far/V2ray-config/main/Sub1.txt",
     "https://raw.githubusercontent.com/barry-far/V2ray-config/main/Sub2.txt",
     "https://raw.githubusercontent.com/barry-far/V2ray-config/main/Sub3.txt",
     "https://raw.githubusercontent.com/barry-far/V2ray-config/main/Sub4.txt"
-    # 注：网页型源(如freeclashnode)由于每天URL带有日期或动态参数，建议手动定期更新或改用公开的订阅源
 ]
 
-# 常见国家/地区关键字映射（用于从原始节点名中洗出国家）
 COUNTRY_MAP = {
     '香港': 'HK', 'HK': 'HK', 'HONG KONG': 'HK',
     '台湾': 'TW', 'TW': 'TW', 'TAIWAN': 'TW',
@@ -31,17 +37,14 @@ COUNTRY_MAP = {
 }
 
 def detect_country(raw_name):
-    """从节点的原始备注名里匹配国家/地区"""
-    upper_name = raw_name.upper()
+    upper_name = str(raw_name).upper()
     for kw, code in COUNTRY_MAP.items():
         if kw in upper_name:
             return code
-    return "🚀" # 未捕获到时默认的符号或写"未知"
+    return "🚀"
 
 def safe_b64decode(s):
-    """安全 Base64 解码"""
     s = s.strip()
-    # 补齐等号
     missing_padding = len(s) % 4
     if missing_padding:
         s += '=' * (4 - missing_padding)
@@ -51,14 +54,12 @@ def safe_b64decode(s):
         return ""
 
 def fetch_and_decode():
-    """抓取源并统一解码为明文行"""
     raw_configs = []
     for url in SOURCES:
         try:
-            res = requests.get(url, timeout=15)
+            res = requests.get(url, timeout=8)
             if res.status_code == 200:
                 content = res.text.strip()
-                # 判断是否是 base64 加密订阅
                 if "://" not in content and len(content) > 20:
                     decoded = safe_b64decode(content)
                     lines = decoded.splitlines()
@@ -69,75 +70,90 @@ def fetch_and_decode():
                     if "://" in line:
                         raw_configs.append(line.strip())
         except Exception as e:
-            print(f"读取源失败 {url}: {e}")
+            print(f"跳过失效或未更新的源 {url}")
     return list(set(raw_configs))
 
-def rename_nodes(nodes):
-    """核心重命名逻辑"""
-    renamed_nodes = []
+def check_port(host, port, timeout=2):
+    try:
+        port = int(port)
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except:
+        return False
+
+def parse_and_validate_node(node):
+    try:
+        if node.startswith("vmess://"):
+            b64_data = node.replace("vmess://", "")
+            json_str = safe_b64decode(b64_data)
+            if json_str:
+                config = json.loads(json_str)
+                # 极其宽松的测速：如果由于任何原因测速失败，也可以考虑先不放行，但这里确保测速逻辑不崩
+                if check_port(config.get("add"), config.get("port")):
+                    return True, {"type": "vmess", "data": config}
+        
+        elif node.startswith(("vless://", "trojan://", "ss://", "hysteria2://", "hy2://")):
+            base_part = node.split("#")[0]
+            server_part = base_part.split("@")[-1].split("?")[0]
+            if ":" in server_part:
+                host, port = server_part.split(":")[:2]
+                port = port.split("/")[0]
+                if check_port(host, port):
+                    return True, {"type": "uri", "data": node}
+    except Exception as e:
+        pass
+    return False, None
+
+def rename_and_filter_nodes(nodes):
+    final_nodes = []
     counter = 1
     
+    # 【保证第一行绝对存在】强制注入公告节点
+    notice_name = "📢-来自公开的免费节点源 仅作为学习参考"
+    notice_node = f"vless://unusable-uuid@127.0.0.1:8888?encryption=none&security=none#{urllib.parse.quote(notice_name)}"
+    final_nodes.append(notice_node)
+
+    print("开始检测节点可用性...")
     for node in nodes:
         try:
-            if node.startswith("vmess://"):
-                # vmess 的后半部分通常是 base64 编码的 json
-                b64_data = node.replace("vmess://", "")
-                json_str = safe_b64decode(b64_data)
-                if json_str:
-                    config = json.loads(json_str)
-                    old_ps = config.get("ps", "")
-                    country = detect_country(old_ps)
-                    # 重新命名 ps
-                    config["ps"] = f"{country}-Rowanss节点分享-{counter:03d}"
-                    new_b64 = base64.b64encode(json.dumps(config).encode('utf-8')).decode('utf-8')
-                    renamed_nodes.append(f"vmess://{new_b64}")
-                    counter += 1
-                    
-            elif node.startswith(("vless://", "trojan://", "ss://")):
-                # 这些协议的备注名通常在 URL 末尾的 # 后面
-                if "#" in node:
-                    base_url, old_ps_encoded = node.split("#", 1)
+            is_alive, node_info = parse_and_validate_node(node)
+            if not is_alive:
+                continue  # 过滤死节点
+                
+            if node_info["type"] == "vmess":
+                config = node_info["data"]
+                old_ps = config.get("ps", "")
+                country = detect_country(old_ps)
+                config["ps"] = f"{country}-Rowanss节点分享-{counter:03d}"
+                new_b64 = base64.b64encode(json.dumps(config).encode('utf-8')).decode('utf-8')
+                final_nodes.append(f"vmess://{new_b64}")
+                counter += 1
+                
+            elif node_info["type"] == "uri":
+                orig_node = node_info["data"]
+                if "#" in orig_node:
+                    base_url, old_ps_encoded = orig_node.split("#", 1)
                     old_ps = urllib.parse.unquote(old_ps_encoded)
                     country = detect_country(old_ps)
                 else:
-                    base_url = node
+                    base_url = orig_node
                     country = "🚀"
                 
                 new_ps = f"{country}-Rowanss节点分享-{counter:03d}"
-                new_ps_encoded = urllib.parse.quote(new_ps)
-                renamed_nodes.append(f"{base_url}#{new_ps_encoded}")
+                final_nodes.append(f"{base_url}#{urllib.parse.quote(new_ps)}")
                 counter += 1
-                
-            elif node.startswith("hysteria2://") or node.startswith("hy2://"):
-                # Hysteria2 同上，也是在 # 后面
-                if "#" in node:
-                    base_url, old_ps_encoded = node.split("#", 1)
-                    old_ps = urllib.parse.unquote(old_ps_encoded)
-                    country = detect_country(old_ps)
-                else:
-                    base_url = node
-                    country = "🚀"
-                new_ps = f"{country}-Rowanss节点分享-{counter:03d}"
-                renamed_nodes.append(f"{base_url}#{urllib.parse.quote(new_ps)}")
-                counter += 1
-            else:
-                # 其他不支持解析的直接保留原样
-                renamed_nodes.append(node)
         except Exception as e:
-            # 解析单条失败则保留原节点不崩溃
-            renamed_nodes.append(node)
+            # 即使某一条解析爆了，也继续循环，绝不让整个脚本中断
+            continue
             
-    return renamed_nodes
+    return final_nodes
 
 if __name__ == "__main__":
-    print("开始从各大 Agent 推荐源抓取免费节点...")
     raw_nodes = fetch_and_decode()
-    print(f"共抓取到 {len(raw_nodes)} 个原始节点。开始过滤并规范化重命名...")
+    processed_nodes = rename_and_filter_nodes(raw_nodes)
     
-    final_nodes = rename_nodes(raw_nodes)
-    
-    # 保存结果
-    joined_nodes = "\n".join(final_nodes)
+    # 最终写入文件
+    joined_nodes = "\n".join(processed_nodes)
     with open("nodes.txt", "w", encoding="utf-8") as f:
         f.write(joined_nodes)
         
@@ -145,4 +161,4 @@ if __name__ == "__main__":
     with open("sub.txt", "w", encoding="utf-8") as f:
         f.write(b64_encoded)
         
-    print(f"处理完成！最终可用节点数: {len(final_nodes)}。已生成 nodes.txt 和 sub.txt")
+    print("写入完毕。")
