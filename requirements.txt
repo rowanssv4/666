@@ -1,1 +1,2 @@
 requests==2.31.0
+socksipy-branch==1.1
