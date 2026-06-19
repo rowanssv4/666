@@ -1,18 +1,32 @@
-import requests
-import base64
-import re
-import urllib.parse
-import json
-import datetime
+import sys
+import os
+
+print("--- [DEBUG] 脚本进入初始化阶段 ---")
+
+try:
+    import requests
+    import base64
+    import re
+    import urllib.parse
+    import json
+    import datetime
+    import traceback
+    print("--- [DEBUG] 所有核心依赖库加载成功 ---")
+except Exception as init_err:
+    print(f"❌ [CRITICAL] 依赖库导入失败: {init_err}")
+    sys.exit(1)
 
 def get_date_strings(days_ago=0):
-    """获取北京时间及过去几天的日期字符串"""
     bj_time = datetime.datetime.utcnow() + datetime.timedelta(hours=8) - datetime.timedelta(days=days_ago)
     return bj_time.strftime("%Y%m%d"), bj_time.strftime("%Y"), bj_time.strftime("%m")
 
-# 获取今天和昨天的日期，防止动态源 404
-d_today, y_today, m_today = get_date_strings(0)
-d_yesterday, y_yesterday, m_yesterday = get_date_strings(1)
+try:
+    d_today, y_today, m_today = get_date_strings(0)
+    d_yesterday, y_yesterday, m_yesterday = get_date_strings(1)
+    print(f"--- [DEBUG] 动态日期计算成功: 今天={d_today}, 昨天={d_yesterday} ---")
+except Exception as date_err:
+    print(f"❌ [CRITICAL] 日期计算失败: {date_err}")
+    sys.exit(1)
 
 SOURCES = [
     "https://raw.githubusercontent.com/Pawdroid/Free-servers/main/sub",
@@ -58,15 +72,18 @@ def safe_b64decode(s):
 
 def fetch_and_decode():
     raw_configs = []
-    # 严格匹配标准节点链接前缀
     node_pattern = re.compile(r'^(vmess|vless|ss|trojan|hysteria2|hy2)://[^\s]+')
     
+    print(f"--- [DEBUG] 开始执行数据源抓取，共 {len(SOURCES)} 个源 ---")
     for url in SOURCES:
         try:
+            print(f"👉 正在请求源: {url}")
             res = requests.get(url, timeout=10)
+            print(f"   [状态码: {res.status_code}]")
             if res.status_code == 200:
                 content = res.text.strip()
                 if "<html" in content.lower() or "<doctype" in content.lower():
+                    print("   [⚠️ 警告] 检测到 HTML 源码而非订阅，跳过")
                     continue
                     
                 if "://" not in content and len(content) > 20:
@@ -75,24 +92,30 @@ def fetch_and_decode():
                 else:
                     lines = content.splitlines()
                 
+                valid_count = 0
                 for line in lines:
                     line_str = line.strip()
                     if node_pattern.match(line_str):
                         raw_configs.append(line_str)
-        except Exception:
-            pass
+                        valid_count += 1
+                print(f"   [成功] 从该源提取到 {valid_count} 个标准节点行")
+        except Exception as e:
+            print(f"   [失败] 访问该源发生异常: {e}")
+            
     return list(set(raw_configs))
 
 def rename_nodes_all(nodes):
     final_nodes = []
     counter = 1
     
+    print(f"--- [DEBUG] 开始解析与重命名，原始合并总数: {len(nodes)} ---")
+    
     # 强制注入首行提示死节点
     notice_name = "📢-来自公开的免费节点源 仅作为学习参考"
     notice_node = f"vless://unusable-uuid@127.0.0.1:8888?encryption=none&security=none#{urllib.parse.quote(notice_name)}"
     final_nodes.append(notice_node)
 
-    for node in nodes:
+    for idx, node in enumerate(nodes):
         try:
             if node.startswith("vmess://"):
                 b64_data = node.replace("vmess://", "")
@@ -118,25 +141,34 @@ def rename_nodes_all(nodes):
                 new_ps = f"{country}-Rowanss节点分享-{counter:03d}"
                 final_nodes.append(f"{base_url}#{urllib.parse.quote(new_ps)}")
                 counter += 1
-        except Exception:
-            # 极个别单条格式奇怪的直接丢弃，不影响大部队
+        except Exception as single_err:
+            print(f"❌ [行错误] 第 {idx} 个节点解析失败，跳过。原因: {single_err}")
             continue
             
     return final_nodes
 
 if __name__ == "__main__":
+    print("--- [DEBUG] 进入主程序入口 (__main__) ---")
     try:
         raw_nodes = fetch_and_decode()
-        processed_nodes = rename_nodes_all(raw_nodes)
+        print(f"--- [DEBUG] 去重合并完成，共有 {len(raw_nodes)} 个节点准备进行格式化 ---")
         
+        processed_nodes = rename_and_filter_nodes_all = rename_nodes_all(raw_nodes)
+        
+        print("--- [DEBUG] 正在尝试写入 nodes.txt ---")
         joined_nodes = "\n".join(processed_nodes)
         with open("nodes.txt", "w", encoding="utf-8") as f:
             f.write(joined_nodes)
             
+        print("--- [DEBUG] 正在尝试写入 sub.txt ---")
         b64_encoded = base64.b64encode(joined_nodes.encode('utf-8')).decode('utf-8')
         with open("sub.txt", "w", encoding="utf-8") as f:
             f.write(b64_encoded)
             
-        print(f"全量处理完毕！共导出 {len(processed_nodes)} 个节点（含公告）。")
-    except Exception as e:
-        print(f"保活拦截: {e}")
+        print(f"--- [🎉 成功] 全量处理完毕！最终生成了 {len(processed_nodes)} 个节点 ---")
+        
+    except Exception as fatal_err:
+        print("\n💥💥💥 [FATAL CRASH] 主程序捕获到未处理的毁灭性崩溃 💥💥💥")
+        print("以下是具体的崩溃调用栈（请提供给 AI 分析）：")
+        traceback.print_exc()
+        sys.exit(1)
