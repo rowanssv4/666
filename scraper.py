@@ -12,7 +12,7 @@ date_str = bj_time.strftime("%Y%m%d")
 year_str = bj_time.strftime("%Y")          
 month_str = bj_time.strftime("%m")         
 
-# 优化源：如果动态源不存在，try 块会自动跳过，不影响整体运行
+# 仅保留标准的明文或 Base64 订阅源，剔除纯 YAML 源（避免格式污染）
 SOURCES = [
     "https://raw.githubusercontent.com/Pawdroid/Free-servers/main/sub",
     f"https://wanzhuanmi.cczzuu.top/node/{date_str}.txt",
@@ -55,11 +55,15 @@ def safe_b64decode(s):
 
 def fetch_and_decode():
     raw_configs = []
+    # 定义合法的协议前缀
+    valid_protocols = ("vmess://", "vless://", "ss://", "trojan://", "hysteria2://", "hy2://")
+    
     for url in SOURCES:
         try:
-            res = requests.get(url, timeout=8)
+            res = requests.get(url, timeout=10)
             if res.status_code == 200:
                 content = res.text.strip()
+                # 如果没有通用协议头且长度很长，尝试进行 base64 解码
                 if "://" not in content and len(content) > 20:
                     decoded = safe_b64decode(content)
                     lines = decoded.splitlines()
@@ -67,15 +71,20 @@ def fetch_and_decode():
                     lines = content.splitlines()
                 
                 for line in lines:
-                    if "://" in line:
-                        raw_configs.append(line.strip())
+                    line_str = line.strip()
+                    # 极其严格的前置过滤：必须以合法协议开头，彻底干掉 YAML 杂质行
+                    if line_str.startswith(valid_protocols):
+                        raw_configs.append(line_str)
         except Exception as e:
-            print(f"跳过失效或未更新的源 {url}")
+            print(f"跳过无法访问的源: {url}")
     return list(set(raw_configs))
 
 def check_port(host, port, timeout=2):
     try:
         port = int(port)
+        # 排除不合法的端口范围
+        if not (0 < port <= 65535):
+            return False
         with socket.create_connection((host, port), timeout=timeout):
             return True
     except:
@@ -88,16 +97,19 @@ def parse_and_validate_node(node):
             json_str = safe_b64decode(b64_data)
             if json_str:
                 config = json.loads(json_str)
-                # 极其宽松的测速：如果由于任何原因测速失败，也可以考虑先不放行，但这里确保测速逻辑不崩
+                # 核心测速过滤
                 if check_port(config.get("add"), config.get("port")):
                     return True, {"type": "vmess", "data": config}
         
         elif node.startswith(("vless://", "trojan://", "ss://", "hysteria2://", "hy2://")):
+            # 分离配置与备注
             base_part = node.split("#")[0]
+            # 提取连接部分
             server_part = base_part.split("@")[-1].split("?")[0]
             if ":" in server_part:
-                host, port = server_part.split(":")[:2]
-                port = port.split("/")[0]
+                parts = server_part.split(":")
+                host = parts[0]
+                port = parts[1].split("/")[0]  # 防止由于残余斜杠引发转换错误
                 if check_port(host, port):
                     return True, {"type": "uri", "data": node}
     except Exception as e:
@@ -108,7 +120,7 @@ def rename_and_filter_nodes(nodes):
     final_nodes = []
     counter = 1
     
-    # 【保证第一行绝对存在】强制注入公告节点
+    # 强制注入首行提示死节点
     notice_name = "📢-来自公开的免费节点源 仅作为学习参考"
     notice_node = f"vless://unusable-uuid@127.0.0.1:8888?encryption=none&security=none#{urllib.parse.quote(notice_name)}"
     final_nodes.append(notice_node)
@@ -118,7 +130,7 @@ def rename_and_filter_nodes(nodes):
         try:
             is_alive, node_info = parse_and_validate_node(node)
             if not is_alive:
-                continue  # 过滤死节点
+                continue  
                 
             if node_info["type"] == "vmess":
                 config = node_info["data"]
@@ -143,22 +155,25 @@ def rename_and_filter_nodes(nodes):
                 final_nodes.append(f"{base_url}#{urllib.parse.quote(new_ps)}")
                 counter += 1
         except Exception as e:
-            # 即使某一条解析爆了，也继续循环，绝不让整个脚本中断
+            # 内部单条异常时绝不抛出，直接跳过处理下一条
             continue
             
     return final_nodes
 
 if __name__ == "__main__":
-    raw_nodes = fetch_and_decode()
-    processed_nodes = rename_and_filter_nodes(raw_nodes)
-    
-    # 最终写入文件
-    joined_nodes = "\n".join(processed_nodes)
-    with open("nodes.txt", "w", encoding="utf-8") as f:
-        f.write(joined_nodes)
+    try:
+        raw_nodes = fetch_and_decode()
+        processed_nodes = rename_and_filter_nodes(raw_nodes)
         
-    b64_encoded = base64.b64encode(joined_nodes.encode('utf-8')).decode('utf-8')
-    with open("sub.txt", "w", encoding="utf-8") as f:
-        f.write(b64_encoded)
-        
-    print("写入完毕。")
+        # 最终写入文件
+        joined_nodes = "\n".join(processed_nodes)
+        with open("nodes.txt", "w", encoding="utf-8") as f:
+            f.write(joined_nodes)
+            
+        b64_encoded = base64.b64encode(joined_nodes.encode('utf-8')).decode('utf-8')
+        with open("sub.txt", "w", encoding="utf-8") as f:
+            f.write(b64_encoded)
+            
+        print(f"写入完毕。共成功输出 {len(processed_nodes)} 个节点（含公告）。")
+    except Exception as main_err:
+        print(f"主进程拦截异常，进行兜底保活: {main_err}")
