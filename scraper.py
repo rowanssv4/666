@@ -50,7 +50,8 @@ SOURCES = [
     f"https://freenode.yoyapai.com/{t0['slash_ym']}/{t0['d']}-yoyapai.com-ssr-v2ray-vpn-mianfei-jiedian.txt",
     f"https://freenode.yoyapai.com/{t1['slash_ym']}/{t1['d']}-yoyapai.com-ssr-v2ray-vpn-mianfei-jiedian.txt",
     f"https://oss.oneclash.cc/{t0['slash_ym']}/{t0['ymd']}.txt",
-    f"https://oss.oneclash.cc/{t1['slash_ym']}/{t1['ymd']}.txt"
+    f"https://oss.oneclash.cc/{t1['slash_ym']}/{t1['ymd']}.txt",
+    "https://raw.githubusercontent.com/MatinGhanbari/v2ray-configs/main/subscriptions/v2ray/super-sub.txt"
 ]
 
 COUNTRY_KEYWORDS = {
